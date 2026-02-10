@@ -34,8 +34,10 @@
 ---
 
 ## 2. 车道线检测
-
+github原地址：https://github.com/cfzd/Ultra-Fast-Lane-Detection/
 - **模型**：Ultra-Fast-Lane-Detection（Tusimple 预训练，ResNet-18 backbone）。
+- 模型下载地址：https://drive.google.com/file/d/1WCYyur5ZaWczH15ecmeDowrW30xcLrCn/view?usp=sharing
+- 下载后放到\weights\tusimple_18.pth
 - **输入**：单帧图像，预处理为 288×800，ImageNet 归一化。
 - **输出**：每条车道在 56 个行锚上的横向位置（网格分类解码为亚像素横坐标），最多 4 条车道。
 - **可视化**：检测到的车道线在画面上用**绿色点**标出。
@@ -205,7 +207,7 @@ u(t) = Kp·e(t) + Ki·∫e(τ)dτ + Kd·de(t)/dt
 
 ### 7.1 依赖
 
-- 见项目根目录 `requirements.txt` 及 `INSTALL.md`。
+- 见项目根目录 `requirements.txt`
 - 车道线检测依赖 PyTorch、OpenCV、PIL 等；PID 仅用标准库与 NumPy。
 
 ### 7.2 启动方式
