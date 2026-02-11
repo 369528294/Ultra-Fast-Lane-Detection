@@ -23,7 +23,12 @@
   # 使用 CPU
   python demo_camera.py --source test.mp4 --no_cuda
 
-按 Q 或 Esc 退出预览窗口。
+按键
+----
+  Q / Esc    退出
+  A / 左方向键  目标车道改为左侧（并线左），红线与 error/steer 随之切换
+  D / 右方向键  目标车道改为右侧（并线右）
+  C / S      恢复当前车道
 """
 import argparse
 import os
@@ -80,14 +85,14 @@ def out_j_to_lanes(out_j, col_sample_w, img_w, img_h):
     return lanes
 
 
-def compute_center(lanes, img_width):
+def compute_center(lanes, img_width, lane_offset=0):
     """
-    求「当前车道」中心线（本车所在车道的中心），不是整条路的中心。
-    思路：画面中心 ≈ 车头方向，选横坐标刚好夹住画面中心的两条车道线，
-    作为本车道的左右边界，再取这两条线之间的中线即为当前车道中心线。
+    求目标车道的中心线。lane_offset：0=当前车道，-1=左侧车道（并线左），+1=右侧车道（并线右）。
+    思路：将所有有效车道按平均 x 从左到右排序，找到夹住画面中心的一对作为「当前车道」，
+    再根据 lane_offset 左移或右移一对，取该对的中线。
     """
     center_x = img_width / 2
-    # 每条车道一个平均横坐标（用有效点）
+    # 每条车道的平均横坐标（仅有效点）
     lane_avg_x = []
     for lane in lanes:
         valid_x = [p[0] for p in lane if p[0] > 0]
@@ -95,28 +100,33 @@ def compute_center(lanes, img_width):
             lane_avg_x.append(None)
             continue
         lane_avg_x.append(np.mean(valid_x))
-    # 左边界：平均 x 在画面中心左侧且尽量靠右（即离中心最近的那条左线）
-    left = None
-    left_best = -1
-    for i, avg_x in enumerate(lane_avg_x):
-        if avg_x is None or avg_x >= center_x:
-            continue
-        if avg_x > left_best:
-            left_best = avg_x
-            left = lanes[i]
-    # 右边界：平均 x 在画面中心右侧且尽量靠左
-    right = None
-    right_best = img_width + 1
-    for i, avg_x in enumerate(lane_avg_x):
-        if avg_x is None or avg_x < center_x:
-            continue
-        if avg_x < right_best:
-            right_best = avg_x
-            right = lanes[i]
-    if left is None or right is None:
+    # 从左到右排序：(avg_x, lane_index)，只保留有效
+    sorted_pairs = [(avg_x, i) for i, avg_x in enumerate(lane_avg_x) if avg_x is not None]
+    sorted_pairs.sort(key=lambda x: x[0])
+    n = len(sorted_pairs)
+    if n < 2:
         return None
+    # 找到夹住画面中心的一对：left_idx 为「当前车道」左边界在 sorted 中的下标
+    left_idx = -1
+    for i in range(n - 1):
+        if sorted_pairs[i][0] < center_x <= sorted_pairs[i + 1][0]:
+            left_idx = i
+            break
+    if left_idx < 0:
+        if center_x <= sorted_pairs[0][0]:
+            left_idx = 0
+        else:
+            left_idx = n - 2
+    right_idx = left_idx + 1
+    # 并线偏移：-1=选左侧车道，+1=选右侧车道
+    if lane_offset == -1 and left_idx - 1 >= 0:
+        left_idx, right_idx = left_idx - 1, left_idx
+    elif lane_offset == 1 and right_idx + 1 < n:
+        left_idx, right_idx = right_idx, right_idx + 1
+    left_lane = lanes[sorted_pairs[left_idx][1]]
+    right_lane = lanes[sorted_pairs[right_idx][1]]
     center = []
-    for l, r in zip(left, right):
+    for l, r in zip(left_lane, right_lane):
         if l[0] > 0 and r[0] > 0:
             cx = (l[0] + r[0]) / 2
             cy = (l[1] + r[1]) / 2
@@ -232,6 +242,8 @@ def main():
     CONTROL_HZ = 10
     control_interval = 1.0 / CONTROL_HZ
     last_control_time = t_prev
+    # 并线控制：0=当前车道，-1=左侧车道，+1=右侧车道（左键/右键切换）
+    lane_offset = 0
 
     with torch.no_grad():
         while True:
@@ -268,9 +280,9 @@ def main():
             # 画面正中央一根蓝色竖线（视觉中心），用于和红线对比偏左/偏右
             cx_cam = int(img_w / 2)
             cv2.line(vis, (cx_cam, 0), (cx_cam, img_h), (255, 0, 0), 2)
-            # 转成 lanes 并画中心线（红线），只强调最底部一个红点（最接近机器人）
+            # 转成 lanes 并画中心线（红线）；lane_offset 由左/右键切换目标车道
             lanes = out_j_to_lanes(out_j, col_sample_w, img_w, img_h)
-            center = compute_center(lanes, img_w)
+            center = compute_center(lanes, img_w, lane_offset)
             if center and len(center) > 1:
                 for i in range(len(center) - 1):
                     cv2.line(vis, center[i], center[i + 1], (0, 0, 255), 3)
@@ -300,12 +312,19 @@ def main():
                 cmd = "偏左 (%.0f)" % filtered_error
             else:
                 cmd = "居中 (0)"
-            draw_instruction(vis, cmd, img_h, extra_line="steer: %.3f (10Hz)" % steer)
-            cv2.imshow('Lane Detection (Q/Esc to quit)', vis)
+            lane_hint = "车道: 当前" if lane_offset == 0 else ("车道: 左侧(并线左)" if lane_offset == -1 else "车道: 右侧(并线右)")
+            draw_instruction(vis, cmd, img_h, extra_line="steer: %.3f (10Hz) | %s" % (steer, lane_hint))
+            cv2.imshow('Lane Detection (A/D: lane | Q/Esc: quit)', vis)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKeyEx(1)
             if key == ord('q') or key == ord('Q') or key == 27:
                 break
+            elif key == ord('a') or key == 2424832:   # A 或 左方向键：目标车道改为左侧（并线左）
+                lane_offset = -1
+            elif key == ord('d') or key == 2555904:   # D 或 右方向键：目标车道改为右侧（并线右）
+                lane_offset = 1
+            elif key == ord('c') or key == ord('s'):  # C/S：恢复当前车道
+                lane_offset = 0
 
     cap.release()
     cv2.destroyAllWindows()
